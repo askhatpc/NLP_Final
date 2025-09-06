@@ -1,0 +1,341 @@
+---
+title: "Анализ научных публикаций на тему 'Искусственный интеллект в образовании'"
+author: "Askhat Makhmetov"
+date: "4.08.2025"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    theme: united
+---
+
+```{r setup, include=FALSE}
+# Эта часть кода устанавливает глобальные параметры для всего документа.
+# echo = TRUE означает, что код будет показан в итоговом отчете.
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## Введение
+
+Этот отчет представляет собой комплексный анализ текстовых данных из научных публикаций, посвященных применению искусственного интеллекта (ИИ) в образовании. Данные были выгружены из базы Scopus. Анализ включает в себя:
+
+1.  **Подготовку данных**: загрузку, очистку и фильтрацию.
+2.  **Предобработку текста**: лемматизацию и удаление стоп-слов.
+3.  **Частотный анализ**: выявление наиболее популярных N-граммов и ключевых слов с помощью TF-IDF.
+4.  **Тематическое моделирование (LDA)**: определение основных тематических кластеров в корпусе текстов.
+5.  **Анализ тональности**: оценка общего настроения публикаций.
+
+---
+
+### Шаг 0: Установка и загрузка библиотек
+
+В этом блоке мы загружаем все необходимые библиотеки для анализа. Если какая-либо из них не установлена, необходимо раскомментировать (убрать `#`) и выполнить соответствующую строку `install.packages()`.
+
+```{r setup-and-load-libraries}
+# Если какая-то из библиотек не установлена, раскомментируйте и выполните нужную строку
+# install.packages("tidyverse")
+# install.packages("tidytext")
+# install.packages("udpipe")
+# install.packages("topicmodels")
+# install.packages("wordcloud2")
+# install.packages("stopwords")
+
+library(tidyverse)    # Для манипуляций с данными и визуализации
+library(tidytext)     # Основной инструмент для текстового анализа
+library(udpipe)       # Для качественной лемматизации
+library(topicmodels)  # Для тематического моделирования (LDA)
+library(wordcloud2)   # Для создания облаков слов
+library(stopwords)    # Для расширенных списков стоп-слов
+```
+
+---
+
+### Шаг 1: Загрузка и первичная подготовка данных
+
+Загружаем данные из CSV-файла, выгруженного из Scopus. Затем отбираем только англоязычные статьи, у которых есть аннотация (Abstract). Объединяем заголовок и аннотацию в единое текстовое поле `text`.
+
+**Важно:** Убедитесь, что путь к файлу `file_path` указан корректно для вашей системы.
+
+```{r load-data}
+# Указываем путь к вашему файлу.
+file_path <- "/Users/Askhat/Desktop/KSL/NLP/Final/AI_in_Edu.csv"
+
+# Загружаем CSV файл
+scopus_data <- readr::read_csv(file_path, col_types = cols(.default = "c"))
+
+# Подготовка данных с фильтрацией по полному названию колонки
+ai_edu_text <- scopus_data %>%
+  # Фильтруем по колонке с пробелами, используя обратные кавычки
+  filter(`Language of Original Document` == "English") %>%
+  # Выбираем нужные колонки и создаем единое текстовое поле
+  select(ID = EID, Title, Abstract, Year) %>%
+  mutate(text = paste(Title, Abstract, sep = ". ")) %>%
+  # Убираем строки без аннотации
+  filter(!is.na(Abstract) & Abstract != "") %>%
+  # Пересоздаем ID для уникальности
+  mutate(ID = row_number())
+
+cat("--- 1. Данные загружены и подготовлены ---\n")
+cat("Всего для анализа отобрано:", nrow(ai_edu_text), "публикаций.\n")
+```
+
+---
+
+### Шаг 2: Предобработка текста
+
+Этот этап является ключевым для качественного анализа. Он состоит из нескольких подзадач.
+
+#### 2.1 Лемматизация
+
+Лемматизация — это процесс приведения слова к его базовой, словарной форме (лемме). Мы используем модель `udpipe` для английского языка, так как она обеспечивает высокое качество лемматизации.
+
+**Примечание:** Процесс лемматизации может занять много времени. В предоставленном коде этот шаг закомментирован, и вместо него загружается уже обработанный файл `lemmatized_tokens_output.csv`. Если вы запускаете код впервые, вам нужно будет выполнить лемматизацию.
+
+```{r lemmatization}
+# --- Код для выполнения лемматизации (закомментирован) ---
+# При первом запуске модель скачается из интернета.
+# udpipe_download_model(language = "english-ewt")
+# ud_model <- udpipe_load_model(file = udpipe_download_model(language = "english-ewt")$file_model)
+
+# Применяем модель для аннотирования текста.
+# lemmatized_tokens <- udpipe_annotate(ud_model, x = ai_edu_text$text, doc_id = ai_edu_text$ID) %>%
+#   as_tibble()
+# 
+# # Сохраняем результат, чтобы не повторять процесс
+# readr::write_csv(lemmatized_tokens, "lemmatized_tokens_output.csv")
+
+
+# --- Загрузка готового файла с леммами ---
+# Указываем путь к вашему файлу с леммами
+file_path_lemmas <- "/Users/Askhat/Desktop/KSL/NLP/Final/lemmatized_tokens_output.csv"
+
+# Читаем CSV файл
+lemmatized_tokens <- read_csv(file_path_lemmas)
+
+cat("Данные с леммами успешно загружены.\n")
+head(lemmatized_tokens)
+```
+
+#### 2.2 Создание объединенного списка стоп-слов
+
+Стандартного списка стоп-слов часто недостаточно для анализа научной литературы. Мы создаем собственный расширенный список, который включает общие английские стоп-слова и термины, специфичные для научных статей (например, "study", "result", "doi" и т.д.).
+
+```{r create-stopwords}
+# 1. Получаем стандартный список английских стоп-слов
+english_stop_words <- stopwords("en")
+
+# 2. Создаем вектор с кастомными стоп-словами
+custom_stop_words <- c("doi", "na", "j", "et", "al", "figure", "table", "abstract",
+                       "introduction", "method", "result", "conclusion", "discussion",
+                       "study", "paper", "research", "author", "article", "purpose",
+                       "finding", "implication", "elsevier", "springer", "ieee", "copyright")
+
+# 3. Объединяем оба списка и убираем дубликаты
+all_stop_words_vector <- unique(c(english_stop_words, custom_stop_words))
+
+# 4. Преобразуем вектор в таблицу для использования с `anti_join`
+all_stop_words_df <- tibble(word = all_stop_words_vector)
+
+cat("Объединенный список стоп-слов создан. Всего слов:", nrow(all_stop_words_df), "\n")
+```
+
+#### 2.3 Финальная очистка лемм
+
+Теперь мы очищаем наши лемматизированные токены:
+1.  Оставляем только значащие части речи: существительные (`NOUN`), глаголы (`VERB`), прилагательные (`ADJ`) и имена собственные (`PROPN`).
+2.  Удаляем все слова из нашего объединенного списка стоп-слов.
+3.  Убираем слишком короткие слова (менее 3 букв).
+
+```{r clean-lemmas}
+lemmas_clean <- lemmatized_tokens %>%
+  # ШАГ 1: Фильтруем по части речи
+  filter(upos %in% c("NOUN", "VERB", "ADJ", "PROPN")) %>%
+  
+  # ШАГ 2: Выбираем только нужные колонки
+  select(doc_id, lemma) %>%
+  rename(word = lemma) %>%
+  
+  # ШАГ 3: Убираем стоп-слова из нашего объединенного списка
+  anti_join(all_stop_words_df, by = "word") %>%
+  
+  # ШАГ 4: Убираем короткие слова и остатки мусора
+  filter(nchar(word) > 2)
+
+cat("--- 2. Предобработка завершена ---\n")
+cat("Текст очищен от пунктуации, стоп-слов и коротких токенов.\n\n")
+head(lemmas_clean)
+```
+
+---
+
+### Шаг 3: Частотный анализ
+
+На этом этапе мы анализируем, какие слова и словосочетания встречаются в текстах чаще всего.
+
+#### 3.1 Анализ N-граммов (биграммы и триграммы)
+
+N-граммы — это последовательности из N слов. Биграммы (2 слова) и триграммы (3 слова) помогают понять контекст и выявить устойчивые словосочетания.
+
+```{r n-grams}
+# Анализ биграмм (пар слов)
+bigrams <- ai_edu_text %>%
+  unnest_tokens(bigram, text, token = "ngrams", n = 2) %>%
+  separate(bigram, c("word1", "word2"), sep = " ") %>%
+  filter(!word1 %in% all_stop_words_vector, !word2 %in% all_stop_words_vector) %>%
+  unite(bigram, word1, word2, sep = " ") %>%
+  count(bigram, sort = TRUE)
+
+# Анализ триграмм (троек слов)
+trigrams <- ai_edu_text %>%
+  unnest_tokens(trigram, text, token = "ngrams", n = 3) %>%
+  separate(trigram, c("word1", "word2", "word3"), sep = " ") %>%
+  filter(!word1 %in% all_stop_words_vector, !word2 %in% all_stop_words_vector, !word3 %in% all_stop_words_vector) %>%
+  unite(trigram, word1, word2, word3, sep = " ") %>%
+  count(trigram, sort = TRUE)
+
+# Вывод топ-15
+cat("--- Топ-15 биграмм: ---\n")
+print(head(bigrams, 15))
+cat("\n--- Топ-15 триграмм: ---\n")
+print(head(trigrams, 15))
+```
+
+#### Визуализация топ-15 биграмм
+
+График ниже наглядно показывает самые частые словосочетания из двух слов.
+
+```{r plot-bigrams, fig.width=10, fig.height=8}
+bigrams %>%
+  head(15) %>%
+  ggplot(aes(x = reorder(bigram, n), y = n)) +
+  geom_col(fill = "#2E86C1") +
+  coord_flip() +
+  labs(title = "Топ-15 биграмм в исследованиях по ИИ в образовании",
+       x = "Биграмма", y = "Частота") +
+  theme_minimal(base_size = 14)
+```
+
+#### 3.2 Анализ TF-IDF
+
+**TF-IDF** (Term Frequency-Inverse Document Frequency) — это метрика, которая показывает важность слова в контексте документа (статьи). Слова, которые часто встречаются в одной статье, но редко во всех остальных, получают высокий балл TF-IDF и являются хорошими маркерами содержания этого документа.
+
+```{r tf-idf}
+tf_idf <- lemmas_clean %>%
+  count(doc_id, word, sort = TRUE) %>%
+  bind_tf_idf(word, doc_id, n) %>%
+  arrange(desc(tf_idf))
+
+cat("\n--- Топ-15 слов по TF-IDF: ---\n")
+print(head(tf_idf, 15))
+```
+
+#### Визуализация топ-15 слов по TF-IDF
+
+На графике представлены слова с самой высокой "уникальной важностью" во всем корпусе текстов.
+
+```{r plot-tfidf, fig.width=10, fig.height=8}
+tf_idf %>%
+  group_by(word) %>%
+  summarise(total_tf_idf = sum(tf_idf)) %>%
+  arrange(desc(total_tf_idf)) %>%
+  head(15) %>%
+  ggplot(aes(x = reorder(word, total_tf_idf), y = total_tf_idf)) +
+  geom_col(fill = "#1ABC9C") +
+  coord_flip() +
+  labs(title = "Топ-15 слов по суммарному TF-IDF", x = "Слово", y = "Суммарный TF-IDF") +
+  theme_minimal(base_size = 14)
+```
+
+---
+
+### Шаг 4: Тематическое моделирование (LDA)
+
+Латентное размещение Дирихле (LDA) — это вероятностная модель, которая позволяет выявить "темы" (скрытые группы слов) в коллекции документов. Мы применим LDA, чтобы определить 6 основных исследовательских направлений в нашем наборе статей.
+
+```{r lda-model}
+# Создаем матрицу "документ-термин" (DTM)
+dtm <- lemmas_clean %>%
+  count(doc_id, word, sort = TRUE) %>%
+  cast_dtm(doc_id, word, n)
+
+# Запускаем LDA. k - это количество тем.
+set.seed(123) # для воспроизводимости результатов
+lda_model <- LDA(dtm, k = 6, control = list(seed = 123))
+
+# Извлекаем результаты в "tidy" формате
+lda_topics <- tidy(lda_model, matrix = "beta")
+
+# Находим топ-10 слов для каждой темы
+top_terms <- lda_topics %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+cat("\n--- Топ-10 слов для каждой из 6 тем (LDA): ---\n")
+print(top_terms, n = 60)
+```
+
+#### Визуализация тем (LDA)
+
+Каждая панель на графике ниже представляет одну из 6 тем. На ней показаны 10 самых вероятных слов для этой темы. Это позволяет нам интерпретировать и дать название каждой теме.
+
+```{r plot-lda, fig.width=12, fig.height=10}
+top_terms %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ paste("Тема", topic), scales = "free") +
+  scale_y_reordered() +
+  labs(title = "Ключевые слова для каждой темы (LDA)",
+       x = "Вероятность слова в теме (beta)", y = "Термин") +
+  theme_minimal(base_size = 12)
+```
+
+---
+
+### Шаг 5: Анализ тональности (Сентимент-анализ)
+
+Сентимент-анализ позволяет определить эмоциональную окраску текста. Мы используем словарь "bing", который классифицирует слова как "positive" или "negative". Это поможет понять общее настроение в обсуждаемой научной области.
+
+```{r sentiment-analysis}
+# Используем словарь "bing" для определения тональности
+bing_sentiments <- get_sentiments("bing")
+
+# Присоединяем словарь тональности к нашим леммам
+sentiment_analysis <- lemmas_clean %>%
+  inner_join(bing_sentiments, by = "word")
+
+# Подсчитываем общее количество позитивных и негативных слов
+sentiment_summary <- sentiment_analysis %>%
+  count(sentiment)
+
+cat("\n--- Общее распределение тональности: ---\n")
+print(sentiment_summary)
+
+# Находим топ-10 самых частых позитивных и негативных слов
+top_sentiment_words <- sentiment_analysis %>%
+  count(word, sentiment, sort = TRUE) %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 10) %>%
+  ungroup()
+
+cat("\n--- Топ-10 позитивных и негативных слов: ---\n")
+print(top_sentiment_words, n = 20)
+```
+
+#### Визуализация анализа тональности
+
+График показывает 10 наиболее часто встречающихся позитивных и негативных слов в аннотациях. Это дает представление о том, какие концепции чаще всего несут положительную или отрицательную коннотацию в контексте ИИ в образовании.
+
+```{r plot-sentiment, fig.width=12, fig.height=8}
+top_sentiment_words %>%
+  mutate(word = reorder_within(word, n, sentiment)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  scale_y_reordered() +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(x = "Вклад в тональность (частота)", y = "Слово",
+       title = "Самые частые позитивные и негативные слова") +
+  theme_minimal(base_size = 14)
+```
